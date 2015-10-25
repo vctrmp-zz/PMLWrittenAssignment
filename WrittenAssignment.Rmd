@@ -1,0 +1,129 @@
+---
+title: 'Practical Machine Learning: WrittenAssignment'
+author: "VCTRMP"
+date: "October 25, 2015"
+output: html_document
+---
+
+
+```{r, echo=FALSE, message=FALSE}
+library(parallel)
+library(doParallel)
+library(caret)
+library(RCurl)
+library(knitr)
+```
+`r opts_chunk$set(cache=TRUE)`
+
+### Background:
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+### Loading and Normalizing the Data:
+
+In this section, I will Download the CSVs, load them, and then proceed to normalize them
+
+```{r}
+# download source data from he web
+download.file(url="http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", 
+              destfile = "pml-training.csv")
+
+download.file(url="http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", 
+              destfile = "pml-testing.csv")
+
+# load csvs
+pTraining <- read.csv("pml-training.csv")
+pTest <- read.csv("pml-testing.csv")
+
+# removing the first 7 columns from both files as these columns does not seem to help training my models
+pTraining <- pTraining[,-c(1:7)]
+pTest <- pTest[,-c(1:7)]
+
+# remove Near Zero Variance columns from the training set, and remove the same from the test set
+nzv <- nearZeroVar(pTraining)
+pTraining <- pTraining[, -nzv]
+pTest <- pTest[, -nzv]
+
+# remove training N/A columns from the training set, and remove the same from the test set
+cc <- complete.cases(t(pTraining))
+pTraining <- pTraining[,cc]
+pTest <- pTest[,cc]
+```
+
+The datasets that used to have XX columns, now have just 53. This will make is easier and faster for `caret`  and its underlining packages to process them.
+
+### Split the Training set
+
+Now, we are ready to split the training set. I will user 60% to train my models and 40% for the validation of the chosen model
+
+```{r}
+# set seed for repoductibility, splitting the dataset
+set.seed(501)
+partTrain <- createDataPartition(y = pTraining$classe, p = 0.6, list=FALSE)
+training <- pTraining[partTrain,]
+testing <- pTraining[-partTrain,]
+```
+
+### Data Analysis / Model Training:
+
+In order to speed up my model training process, I will make use of the `DoParallel` package (registering all my processors) to enable the parallel processing in the `caret` package
+```{r, cache=TRUE}
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+```
+
+Now it's the time to train my model. I will train it in a few different ways (GBM, LDA, NB, PLS, RF and RPart) and then check for their accurary to chose the best one
+```{r, message=FALSE}
+set.seed(501)
+gbm <- train(classe ~ ., data=training, method="gbm")
+set.seed(501)
+lda <- train(classe ~ ., data=training, method="lda")
+set.seed(501)
+nb <- train(classe ~ ., data=training, method="nb")
+set.seed(501)
+pls <- train(classe ~ ., data=training, method="pls")
+set.seed(501)
+rf <- train(classe ~ ., data=training, method="rf")
+set.seed(501)
+rpart <- train(classe ~ ., data=training, method="rpart")
+```
+
+As we can see below, randomForest got the best accuracy from all the 6 models that we have run. RF achieved roughly 99% mean accuracy, therefore, we will run RF thorugh a validation run.
+
+```{r, echo=FALSE}
+# Results analysis
+results <- resamples( list(GBM=gbm, LDA=lda, NF=nb, PLS=pls, RF=rf, RPart=rpart))
+summary(results)
+bwplot(results)
+```
+
+RF also achieved 0% *In-Sample-Error* with the default training settings:
+```{r, echo=FALSE}
+modelError <- confusionMatrix(predict(rf, newdata=training), training$classe)
+```
+
+### Validation:
+
+For the validation, I will train the model randomForest using `repeatedcv` to force a repeated cross validation (10 fold, repeated 5 times), this should help the model keep its Out of Sample Error low. And then use the training dataset (40% of the original training set) to estimate my confusion matrix
+
+```{r, message=FALSE}
+control <- trainControl(method="repeatedcv", number=10, repeats=5)
+set.seed(501)
+rfMod <- train(classe ~ ., data=training, method="rf", trControl=control)
+rfModError <- confusionMatrix(predict(rfMod, newdata=testing), testing$classe)
+```
+
+```{r, echo=FALSE}
+rfModError
+```
+
+We can see above that the accuracy of the latter model was higher than 99% and that it achieved the *Out of Sample Error* of just 0.008, or 0.8%. The 10 fold, with 5 times repetition seem to have worked. 
+
+### Project Submission
+
+My model final prediction is:
+
+```{r}
+pred <- predict(rfMod, newdata = pTest)
+pred
+```
